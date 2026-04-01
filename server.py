@@ -252,6 +252,220 @@ def delete_context(ctx_id: int, _=Depends(_verify_token)):
     return {"status": "ok"}
 
 
+# --- MCP Streamable HTTP ---
+
+MCP_SERVER_INFO = {
+    "name": "context-hub",
+    "version": "0.1.0",
+}
+MCP_CAPABILITIES = {
+    "tools": {},
+}
+MCP_TOOLS = [
+    {
+        "name": "get_user_todos",
+        "description": "获取用户当前待办事项。Returns the user's current todo items from MineContext.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["all", "active", "completed"],
+                    "description": "Filter by status: all, active (status=0), completed (status=1)",
+                    "default": "all",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of results",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "get_recent_activities",
+        "description": "获取用户最近的电脑操作活动记录。Returns the user's recent desktop activities from MineContext.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hours": {
+                    "type": "integer",
+                    "description": "Look back N hours (default 24)",
+                    "default": 24,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of results",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "get_tips",
+        "description": "获取 MineContext 生成的智能提示。Returns AI-generated tips/insights from MineContext.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of results",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "search_context",
+        "description": "全文搜索上下文数据（待办、活动、提示）。Full-text search across todo, activity, and tip data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query string",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["todo", "activity", "tip", ""],
+                    "description": "Optionally filter by data type",
+                    "default": "",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of results",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+]
+
+
+def _mcp_call_tool(name: str, arguments: dict) -> list:
+    conn = _get_db()
+    try:
+        if name == "get_user_todos":
+            status_filter = arguments.get("status", "all")
+            limit = min(arguments.get("limit", 20), 100)
+            q = "SELECT * FROM contexts WHERE type = 'todo'"
+            params: list = []
+            if status_filter == "active":
+                q += " AND (metadata LIKE '%\"status\": 0%' OR metadata LIKE '%\"status\":0%')"
+            elif status_filter == "completed":
+                q += " AND (metadata LIKE '%\"status\": 1%' OR metadata LIKE '%\"status\":1%')"
+            q += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No todo items found."
+            return [{"type": "text", "text": text}]
+
+        elif name == "get_recent_activities":
+            hours = arguments.get("hours", 24)
+            limit = min(arguments.get("limit", 20), 100)
+            q = "SELECT * FROM contexts WHERE type = 'activity' ORDER BY id DESC LIMIT ?"
+            rows = [dict(r) for r in conn.execute(q, [limit]).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No recent activities found."
+            return [{"type": "text", "text": text}]
+
+        elif name == "get_tips":
+            limit = min(arguments.get("limit", 20), 100)
+            q = "SELECT * FROM contexts WHERE type = 'tip' ORDER BY id DESC LIMIT ?"
+            rows = [dict(r) for r in conn.execute(q, [limit]).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No tips found."
+            return [{"type": "text", "text": text}]
+
+        elif name == "search_context":
+            query = arguments.get("query", "")
+            type_filter = arguments.get("type", "")
+            limit = min(arguments.get("limit", 20), 100)
+            allowed = ("todo", "activity", "tip")
+            q = "SELECT * FROM contexts WHERE (content LIKE ? OR title LIKE ?)"
+            params = [f"%{query}%", f"%{query}%"]
+            if type_filter and type_filter in allowed:
+                q += " AND type = ?"
+                params.append(type_filter)
+            else:
+                placeholders = ",".join(["?"] * len(allowed))
+                q += f" AND type IN ({placeholders})"
+                params.extend(allowed)
+            q += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else f"No results for '{query}'."
+            return [{"type": "text", "text": text}]
+
+        else:
+            return [{"type": "text", "text": f"Unknown tool: {name}"}]
+    finally:
+        conn.close()
+
+
+def _handle_mcp_jsonrpc(body: dict) -> Optional[dict]:
+    """Handle a single MCP JSON-RPC request. Returns response dict or None for notifications."""
+    method = body.get("method", "")
+    req_id = body.get("id")
+    params = body.get("params", {})
+
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": MCP_CAPABILITIES,
+            "serverInfo": MCP_SERVER_INFO,
+        }
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    elif method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": MCP_TOOLS}}
+
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+        try:
+            content = _mcp_call_tool(tool_name, arguments)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": content}}
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True},
+            }
+
+    elif method.startswith("notifications/"):
+        return None
+
+    elif method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    else:
+        return {
+            "jsonrpc": "2.0", "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+
+
+@app.post("/mcp/message")
+async def mcp_message(request: Request):
+    """MCP Streamable HTTP endpoint"""
+    auth = request.headers.get("authorization", "")
+    if AUTH_TOKEN:
+        token = ""
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+        if token != AUTH_TOKEN:
+            return JSONResponse(status_code=403, content={"error": "Invalid token"})
+
+    body = await request.json()
+    result = _handle_mcp_jsonrpc(body)
+
+    if result is None:
+        return JSONResponse(status_code=204, content=None)
+
+    return JSONResponse(content=result, headers={
+        "Content-Type": "application/json",
+    })
+
+
 # --- Web UI ---
 
 @app.get("/", response_class=HTMLResponse)
