@@ -1,0 +1,13 @@
+services:
+  context-hub:
+    build: .
+    container_name: context-hub
+    restart: unless-stopped
+    ports:
+      - "21102:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - AUTH_TOKEN=6198133bb32c125e698e54ca53f57469e0d9dcf7bc138b53
+      - DB_PATH=/data/context.db
+      - SETTINGS_PATH=/data/settings.json
