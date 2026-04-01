@@ -312,6 +312,31 @@ td{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #main-app{display:none}
 .logout-btn{background:transparent;color:var(--muted);border:1px solid var(--border);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:.8rem;transition:.2s}
 .logout-btn:hover{color:var(--red);border-color:var(--red)}
+tr.clickable{cursor:pointer;transition:background .15s}
+tr.clickable:hover{background:rgba(59,130,246,.08)}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100}
+.overlay.show{display:block}
+.slide-panel{position:fixed;top:0;right:-480px;width:480px;max-width:90vw;height:100vh;background:var(--card);border-left:1px solid var(--border);z-index:101;transition:right .25s ease;display:flex;flex-direction:column}
+.slide-panel.show{right:0}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
+.panel-header h3{font-size:1rem}
+.panel-close{background:transparent;border:none;color:var(--muted);font-size:1.4rem;cursor:pointer;padding:4px 8px;border-radius:4px;transition:.2s}
+.panel-close:hover{color:var(--red);background:rgba(239,68,68,.1)}
+.panel-body{flex:1;overflow-y:auto;padding:20px}
+.detail-field{margin-bottom:16px}
+.detail-label{color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+.detail-value{font-size:.85rem;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.detail-value.content-block{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;max-height:300px;overflow-y:auto}
+.detail-value code{background:var(--bg);padding:1px 4px;border-radius:3px;font-size:.8rem}
+.detail-meta{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:'Cascadia Code','Fira Code',monospace;font-size:.75rem;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.panel-actions{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;flex-shrink:0}
+.panel-actions button{padding:6px 14px;border-radius:6px;font-size:.8rem;cursor:pointer;transition:.2s}
+.btn-copy{background:var(--accent);color:#fff;border:none}
+.btn-copy:hover{opacity:.85}
+.btn-delete{background:transparent;color:var(--red);border:1px solid var(--red)}
+.btn-delete:hover{background:rgba(239,68,68,.1)}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--green);color:#fff;padding:8px 20px;border-radius:8px;font-size:.85rem;z-index:200;opacity:0;transition:opacity .3s}
+.toast.show{opacity:1}
 </style>
 </head>
 <body>
@@ -358,6 +383,17 @@ td{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   </div>
 </div>
 
+<div class="overlay" id="overlay" onclick="closePanel()"></div>
+<div class="slide-panel" id="slide-panel">
+  <div class="panel-header">
+    <h3 id="panel-title"></h3>
+    <button class="panel-close" onclick="closePanel()">&times;</button>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+  <div class="panel-actions" id="panel-actions"></div>
+</div>
+<div class="toast" id="toast"></div>
+
 <script>
 let TOKEN = localStorage.getItem('ctx-hub-token') || new URLSearchParams(location.search).get('token') || '';
 let H = TOKEN ? {'Authorization':'Bearer '+TOKEN} : {};
@@ -378,6 +414,23 @@ const I18N = {
     loginBtn: '登录',
     loginError: '令牌无效',
     logout: '退出登录',
+    detail: '详情',
+    copyContent: '复制内容',
+    deleteItem: '删除',
+    copied: '已复制',
+    deleted: '已删除',
+    confirmDelete: '确定删除这条数据吗？',
+    fieldId: 'ID',
+    fieldType: '类型',
+    fieldTitle: '标题',
+    fieldContent: '内容',
+    fieldSource: '来源',
+    fieldTime: '时间',
+    fieldTags: '标签',
+    fieldMetadata: '元数据',
+    fieldContextType: '上下文类型',
+    fieldConfidence: '置信度',
+    fieldImportance: '重要度',
     noData: '暂无数据',
     prev: '上一页',
     next: '下一页',
@@ -420,6 +473,23 @@ const I18N = {
     thSource: 'Source',
     thTime: 'Time',
     typeNames: {},
+    detail: 'Detail',
+    copyContent: 'Copy Content',
+    deleteItem: 'Delete',
+    copied: 'Copied',
+    deleted: 'Deleted',
+    confirmDelete: 'Are you sure you want to delete this item?',
+    fieldId: 'ID',
+    fieldType: 'Type',
+    fieldTitle: 'Title',
+    fieldContent: 'Content',
+    fieldSource: 'Source',
+    fieldTime: 'Time',
+    fieldTags: 'Tags',
+    fieldMetadata: 'Metadata',
+    fieldContextType: 'Context Type',
+    fieldConfidence: 'Confidence',
+    fieldImportance: 'Importance',
     login: 'Login',
     tokenPlaceholder: 'Enter access token...',
     loginBtn: 'Login',
@@ -530,14 +600,18 @@ async function toggleType(type, enabled){
   await api('/api/settings',{method:'POST',body:JSON.stringify({settings:{[type]:enabled}})});
 }
 
+let cachedItems = [];
+
 async function loadData(){
   const type = document.getElementById('filter-type').value;
   const d = await api(`/api/contexts?limit=${pageSize}&offset=${page*pageSize}${type?'&type='+type:''}`);
   totalRecords = d.total;
+  cachedItems = d.items || [];
   const el = document.getElementById('data-table');
-  if(!d.items.length){el.innerHTML=`<div class="empty">${t().noData}</div>`;document.getElementById('pagination').innerHTML='';return;}
+  if(!cachedItems.length){el.innerHTML=`<div class="empty">${t().noData}</div>`;document.getElementById('pagination').innerHTML='';return;}
+  const esc = s => s ? s.replace(/</g,'&lt;').replace(/>/g,'&gt;') : '-';
   el.innerHTML=`<table><thead><tr><th>${t().thId}</th><th>${t().thType}</th><th>${t().thTitle}</th><th>${t().thContent}</th><th>${t().thSource}</th><th>${t().thTime}</th></tr></thead><tbody>${
-    d.items.map(r=>`<tr><td>${r.id}</td><td><span class="badge">${typeName(r.type)}</span></td><td>${r.title||'-'}</td><td>${(r.content||'').substring(0,80)}</td><td>${r.source||'-'}</td><td>${r.created_at||'-'}</td></tr>`).join('')
+    cachedItems.map((r,i)=>`<tr class="clickable" onclick="openPanel(${i})"><td>${r.id}</td><td><span class="badge">${typeName(r.type)}</span></td><td>${esc(r.title)}</td><td>${esc((r.content||'').substring(0,80))}</td><td>${esc(r.source)}</td><td>${r.created_at||'-'}</td></tr>`).join('')
   }</tbody></table>`;
   const pages = Math.ceil(totalRecords/pageSize);
   document.getElementById('pagination').innerHTML=`
@@ -545,6 +619,69 @@ async function loadData(){
     <span>${t().page}${page+1}${t().of}${pages}${t().pages} (${totalRecords}${t().total})</span>
     <button onclick="page++;loadData()" ${page>=pages-1?'disabled':''}>${t().next}</button>`;
 }
+
+function openPanel(idx) {
+  const item = cachedItems[idx];
+  if(!item) return;
+  const T = t();
+  document.getElementById('panel-title').textContent = `${T.detail} #${item.id}`;
+  const esc = s => (s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let metaHtml = '';
+  if(item.metadata) {
+    try {
+      const parsed = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+      metaHtml = `<div class="detail-field"><div class="detail-label">${T.fieldMetadata}</div><div class="detail-meta">${JSON.stringify(parsed, null, 2)}</div></div>`;
+    } catch(e) {
+      metaHtml = `<div class="detail-field"><div class="detail-label">${T.fieldMetadata}</div><div class="detail-meta">${esc(String(item.metadata))}</div></div>`;
+    }
+  }
+  document.getElementById('panel-body').innerHTML = `
+    <div class="detail-field"><div class="detail-label">${T.fieldType}</div><div class="detail-value"><span class="badge">${typeName(item.type)}</span></div></div>
+    ${item.title ? `<div class="detail-field"><div class="detail-label">${T.fieldTitle}</div><div class="detail-value">${esc(item.title)}</div></div>` : ''}
+    <div class="detail-field"><div class="detail-label">${T.fieldContent}</div><div class="detail-value content-block" id="detail-content">${esc(item.content)}</div></div>
+    ${item.source ? `<div class="detail-field"><div class="detail-label">${T.fieldSource}</div><div class="detail-value">${esc(item.source)}</div></div>` : ''}
+    ${item.context_type ? `<div class="detail-field"><div class="detail-label">${T.fieldContextType}</div><div class="detail-value">${esc(item.context_type)}</div></div>` : ''}
+    ${item.tags ? `<div class="detail-field"><div class="detail-label">${T.fieldTags}</div><div class="detail-value">${esc(item.tags)}</div></div>` : ''}
+    ${item.confidence != null ? `<div class="detail-field"><div class="detail-label">${T.fieldConfidence}</div><div class="detail-value">${item.confidence}</div></div>` : ''}
+    ${item.importance != null ? `<div class="detail-field"><div class="detail-label">${T.fieldImportance}</div><div class="detail-value">${item.importance}</div></div>` : ''}
+    <div class="detail-field"><div class="detail-label">${T.fieldTime}</div><div class="detail-value">${item.created_at || '-'}</div></div>
+    ${metaHtml}
+  `;
+  document.getElementById('panel-actions').innerHTML = `
+    <button class="btn-copy" onclick="copyContent(${idx})">${T.copyContent}</button>
+    <button class="btn-delete" onclick="deleteItem(${item.id})">${T.deleteItem}</button>
+  `;
+  document.getElementById('overlay').classList.add('show');
+  document.getElementById('slide-panel').classList.add('show');
+}
+
+function closePanel() {
+  document.getElementById('overlay').classList.remove('show');
+  document.getElementById('slide-panel').classList.remove('show');
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'), 2000);
+}
+
+function copyContent(idx) {
+  const item = cachedItems[idx];
+  if(!item) return;
+  navigator.clipboard.writeText(item.content || '').then(()=>showToast(t().copied));
+}
+
+async function deleteItem(id) {
+  if(!confirm(t().confirmDelete)) return;
+  await api(`/api/contexts/${id}`, {method:'DELETE'});
+  closePanel();
+  showToast(t().deleted);
+  loadData();
+}
+
+document.addEventListener('keydown', e => { if(e.key==='Escape') closePanel(); });
 
 setLang(lang);
 
