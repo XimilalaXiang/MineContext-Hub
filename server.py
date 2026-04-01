@@ -28,6 +28,9 @@ ALL_TYPES = [
 
 app = FastAPI(title="Context Hub", version="0.1.0")
 _start_time = time.time()
+_stats_cache: dict = {}
+_stats_cache_ts: float = 0
+STATS_CACHE_TTL = 10  # seconds
 
 
 def _get_db() -> sqlite3.Connection:
@@ -187,6 +190,10 @@ def health():
 
 @app.get("/stats")
 def stats(_=Depends(_verify_token)):
+    global _stats_cache, _stats_cache_ts
+    now = time.time()
+    if _stats_cache and (now - _stats_cache_ts) < STATS_CACHE_TTL:
+        return _stats_cache
     conn = _get_db()
     total = conn.execute("SELECT COUNT(*) FROM contexts").fetchone()[0]
     by_type = {}
@@ -196,12 +203,14 @@ def stats(_=Depends(_verify_token)):
         "SELECT created_at FROM contexts ORDER BY id DESC LIMIT 1"
     ).fetchone()
     conn.close()
-    return {
+    _stats_cache = {
         "total_records": total,
         "by_type": by_type,
         "last_ingested": last["created_at"] if last else None,
         "db_size_mb": round(DB_PATH.stat().st_size / 1048576, 2) if DB_PATH.exists() else 0,
     }
+    _stats_cache_ts = now
+    return _stats_cache
 
 
 @app.get("/api/contexts")
@@ -261,81 +270,55 @@ MCP_SERVER_INFO = {
 MCP_CAPABILITIES = {
     "tools": {},
 }
+_BRIEF_PROP = {"type": "boolean", "description": "true=overview only (id+title+time)", "default": False}
+_LIMIT_PROP = {"type": "integer", "description": "Max results", "default": 20}
+
 MCP_TOOLS = [
     {
         "name": "get_user_todos",
-        "description": "获取用户当前待办事项。Returns the user's current todo items from MineContext.",
+        "description": "Get user's todo items from MineContext desktop app.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "status": {
-                    "type": "string",
-                    "enum": ["all", "active", "completed"],
-                    "description": "Filter by status: all, active (status=0), completed (status=1)",
-                    "default": "all",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of results",
-                    "default": 20,
-                },
+                "status": {"type": "string", "enum": ["all", "active", "completed"], "default": "all"},
+                "limit": _LIMIT_PROP,
+                "brief": _BRIEF_PROP,
             },
         },
     },
     {
         "name": "get_recent_activities",
-        "description": "获取用户最近的电脑操作活动记录。Returns the user's recent desktop activities from MineContext.",
+        "description": "Get user's recent desktop activity records.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "hours": {
-                    "type": "integer",
-                    "description": "Look back N hours (default 24)",
-                    "default": 24,
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of results",
-                    "default": 20,
-                },
+                "hours": {"type": "integer", "description": "Look back N hours", "default": 24},
+                "limit": _LIMIT_PROP,
+                "brief": _BRIEF_PROP,
             },
         },
     },
     {
         "name": "get_tips",
-        "description": "获取 MineContext 生成的智能提示。Returns AI-generated tips/insights from MineContext.",
+        "description": "Get AI-generated tips/insights from MineContext.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of results",
-                    "default": 20,
-                },
+                "limit": _LIMIT_PROP,
+                "brief": _BRIEF_PROP,
             },
         },
     },
     {
         "name": "search_context",
-        "description": "全文搜索上下文数据（待办、活动、提示）。Full-text search across todo, activity, and tip data.",
+        "description": "Search across todo, activity, and tip data.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query string",
-                },
-                "type": {
-                    "type": "string",
-                    "enum": ["todo", "activity", "tip", ""],
-                    "description": "Optionally filter by data type",
-                    "default": "",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max number of results",
-                    "default": 20,
-                },
+                "query": {"type": "string", "description": "Search query"},
+                "type": {"type": "string", "enum": ["todo", "activity", "tip", ""], "default": ""},
+                "limit": _LIMIT_PROP,
+                "brief": _BRIEF_PROP,
             },
             "required": ["query"],
         },
@@ -343,8 +326,31 @@ MCP_TOOLS = [
 ]
 
 
-def _slim_row(row: dict, row_type: str) -> dict:
-    """Extract only essential fields from a database row, parsing metadata intelligently."""
+def _slim_row(row: dict, row_type: str, *, brief: bool = False) -> dict:
+    """Extract essential fields from a database row.
+    brief=True returns only id/title/time for overview listings."""
+    result = {"id": row["id"], "type": row_type}
+
+    if row.get("title"):
+        result["title"] = row["title"]
+
+    if row.get("client_ts"):
+        result["time"] = row["client_ts"]
+    elif row.get("created_at"):
+        result["time"] = row["created_at"]
+
+    if brief:
+        if not row.get("title"):
+            content = row.get("content") or ""
+            result["summary"] = content[:100] + "..." if len(content) > 100 else content
+        return result
+
+    content = row.get("content") or ""
+    if len(content) > 500:
+        result["content"] = content[:500] + "..."
+    else:
+        result["content"] = content
+
     meta = {}
     if row.get("metadata"):
         try:
@@ -362,8 +368,9 @@ def _slim_row(row: dict, row_type: str) -> dict:
                         meta["key_entities"] = ei["key_entities"]
                     if ei.get("focus_areas"):
                         meta["focus_areas"] = ei["focus_areas"]
-                    if inner_meta.get("category_distribution"):
-                        meta["category"] = inner_meta["category_distribution"]
+                    cat = inner_meta.get("category_distribution")
+                    if isinstance(cat, dict):
+                        meta["category"] = {k: v for k, v in cat.items() if v}
                 if raw.get("status") is not None:
                     meta["status"] = raw["status"]
                 if raw.get("urgency") is not None:
@@ -378,19 +385,6 @@ def _slim_row(row: dict, row_type: str) -> dict:
                     meta["end_time"] = raw["end_time"]
         except (json.JSONDecodeError, TypeError):
             pass
-
-    result = {"id": row["id"], "type": row_type}
-    if row.get("title"):
-        result["title"] = row["title"]
-    content = row.get("content") or ""
-    if len(content) > 500:
-        result["content"] = content[:500] + "..."
-    else:
-        result["content"] = content
-    if row.get("client_ts"):
-        result["time"] = row["client_ts"]
-    elif row.get("created_at"):
-        result["time"] = row["created_at"]
     if meta:
         result["meta"] = meta
     return result
@@ -411,29 +405,34 @@ def _mcp_call_tool(name: str, arguments: dict) -> list:
             q += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
             rows = [_slim_row(dict(r), "todo") for r in conn.execute(q, params).fetchall()]
-            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No todo items found."
+            brief = arguments.get("brief", False)
+            rows = [_slim_row(dict(r), "todo", brief=brief) for r in conn.execute(q, params).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, separators=(",", ":")) if rows else "No todo items found."
             return [{"type": "text", "text": text}]
 
         elif name == "get_recent_activities":
             hours = arguments.get("hours", 24)
             limit = min(arguments.get("limit", 20), 100)
+            brief = arguments.get("brief", False)
             cutoff = f"datetime('now', '-{hours} hours')"
             q = f"SELECT * FROM contexts WHERE type = 'activity' AND (client_ts >= {cutoff} OR client_ts IS NULL) ORDER BY id DESC LIMIT ?"
-            rows = [_slim_row(dict(r), "activity") for r in conn.execute(q, [limit]).fetchall()]
-            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No recent activities found."
+            rows = [_slim_row(dict(r), "activity", brief=brief) for r in conn.execute(q, [limit]).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, separators=(",", ":")) if rows else "No recent activities found."
             return [{"type": "text", "text": text}]
 
         elif name == "get_tips":
             limit = min(arguments.get("limit", 20), 100)
+            brief = arguments.get("brief", False)
             q = "SELECT * FROM contexts WHERE type = 'tip' ORDER BY id DESC LIMIT ?"
-            rows = [_slim_row(dict(r), "tip") for r in conn.execute(q, [limit]).fetchall()]
-            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No tips found."
+            rows = [_slim_row(dict(r), "tip", brief=brief) for r in conn.execute(q, [limit]).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, separators=(",", ":")) if rows else "No tips found."
             return [{"type": "text", "text": text}]
 
         elif name == "search_context":
             query = arguments.get("query", "")
             type_filter = arguments.get("type", "")
             limit = min(arguments.get("limit", 20), 100)
+            brief = arguments.get("brief", False)
             allowed = ("todo", "activity", "tip")
             q = "SELECT * FROM contexts WHERE (content LIKE ? OR title LIKE ?)"
             params = [f"%{query}%", f"%{query}%"]
@@ -446,8 +445,8 @@ def _mcp_call_tool(name: str, arguments: dict) -> list:
                 params.extend(allowed)
             q += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
-            rows = [_slim_row(dict(r), dict(r)["type"]) for r in conn.execute(q, params).fetchall()]
-            text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else f"No results for '{query}'."
+            rows = [_slim_row(dict(r), dict(r)["type"], brief=brief) for r in conn.execute(q, params).fetchall()]
+            text = json.dumps(rows, ensure_ascii=False, separators=(",", ":")) if rows else f"No results for '{query}'."
             return [{"type": "text", "text": text}]
 
         else:
