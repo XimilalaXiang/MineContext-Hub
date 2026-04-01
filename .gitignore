@@ -2,3 +2,5 @@ data/
 __pycache__/
 *.pyc
 .env
+client/config.json
+client/sync_state.json

@@ -1,0 +1,16 @@
+{
+  "hub_url": "https://context.ximilala.com",
+  "hub_token": "YOUR_TOKEN_HERE",
+  "db_path": "",
+  "sync_interval_seconds": 60,
+  "batch_size": 100,
+  "sync_types": [
+    "vaults",
+    "todo",
+    "activity",
+    "tips",
+    "conversations",
+    "messages",
+    "monitoring_data_stats"
+  ]
+}

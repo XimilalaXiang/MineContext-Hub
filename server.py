@@ -302,38 +302,67 @@ td{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .filter-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .filter-bar select,.filter-bar input{background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:.85rem}
 .empty{text-align:center;color:var(--muted);padding:40px}
+#login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;gap:16px}
+#login-screen h1{font-size:1.8rem}
+#login-screen .login-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;width:100%;max-width:400px;display:flex;flex-direction:column;gap:14px}
+#login-screen input{background:var(--bg);color:var(--text);border:1px solid var(--border);padding:10px 14px;border-radius:8px;font-size:.9rem;width:100%}
+#login-screen button{background:var(--accent);color:#fff;border:none;padding:10px;border-radius:8px;font-size:.9rem;cursor:pointer;font-weight:600;transition:.2s}
+#login-screen button:hover{opacity:.9}
+#login-screen .error{color:var(--red);font-size:.85rem;text-align:center;display:none}
+#main-app{display:none}
+.logout-btn{background:transparent;color:var(--muted);border:1px solid var(--border);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:.8rem;transition:.2s}
+.logout-btn:hover{color:var(--red);border-color:var(--red)}
 </style>
 </head>
 <body>
 
-<div class="header-row">
-  <h1>Context Hub <span>v0.1.0</span></h1>
-  <div class="lang-switch" id="lang-switch">
-    <button onclick="setLang('zh')" id="btn-zh">中文</button>
-    <button onclick="setLang('en')" id="btn-en">EN</button>
+<div id="login-screen">
+  <h1>Context Hub</h1>
+  <div class="login-box">
+    <div class="lang-switch" style="align-self:center;margin-bottom:8px">
+      <button onclick="setLang('zh')" id="login-btn-zh">中文</button>
+      <button onclick="setLang('en')" id="login-btn-en">EN</button>
+    </div>
+    <input type="password" id="token-input" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()" id="login-submit"></button>
+    <div class="error" id="login-error"></div>
   </div>
 </div>
 
-<div class="grid" id="stats-grid"></div>
-
-<div class="section">
-  <h2 id="h-settings"></h2>
-  <div class="toggle-grid" id="toggles"></div>
-</div>
-
-<div class="section">
-  <h2 id="h-recent"></h2>
-  <div class="filter-bar">
-    <select id="filter-type" onchange="loadData()"></select>
+<div id="main-app">
+  <div class="header-row">
+    <h1>Context Hub <span>v0.1.0</span></h1>
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="lang-switch" id="lang-switch">
+        <button onclick="setLang('zh')" id="btn-zh">中文</button>
+        <button onclick="setLang('en')" id="btn-en">EN</button>
+      </div>
+      <button class="logout-btn" onclick="doLogout()" id="logout-btn"></button>
+    </div>
   </div>
-  <div id="data-table"></div>
-  <div class="pagination" id="pagination"></div>
+
+  <div class="grid" id="stats-grid"></div>
+
+  <div class="section">
+    <h2 id="h-settings"></h2>
+    <div class="toggle-grid" id="toggles"></div>
+  </div>
+
+  <div class="section">
+    <h2 id="h-recent"></h2>
+    <div class="filter-bar">
+      <select id="filter-type" onchange="loadData()"></select>
+    </div>
+    <div id="data-table"></div>
+    <div class="pagination" id="pagination"></div>
+  </div>
 </div>
 
 <script>
-const TOKEN = new URLSearchParams(location.search).get('token') || '';
-const H = TOKEN ? {'Authorization':'Bearer '+TOKEN} : {};
+let TOKEN = localStorage.getItem('ctx-hub-token') || new URLSearchParams(location.search).get('token') || '';
+let H = TOKEN ? {'Authorization':'Bearer '+TOKEN} : {};
 let page = 0, pageSize = 20, totalRecords = 0;
+let authed = false;
 
 const I18N = {
   zh: {
@@ -344,6 +373,11 @@ const I18N = {
     dbSize: '数据库大小',
     lastIngested: '最近写入',
     never: '暂无',
+    login: '登录',
+    tokenPlaceholder: '请输入访问令牌...',
+    loginBtn: '登录',
+    loginError: '令牌无效',
+    logout: '退出登录',
     noData: '暂无数据',
     prev: '上一页',
     next: '下一页',
@@ -385,7 +419,12 @@ const I18N = {
     thContent: 'Content',
     thSource: 'Source',
     thTime: 'Time',
-    typeNames: {}
+    typeNames: {},
+    login: 'Login',
+    tokenPlaceholder: 'Enter access token...',
+    loginBtn: 'Login',
+    loginError: 'Invalid token',
+    logout: 'Logout'
   }
 };
 
@@ -396,16 +435,63 @@ const typeName = (k) => t().typeNames[k] || k;
 function setLang(l) {
   lang = l;
   localStorage.setItem('ctx-hub-lang', l);
-  document.getElementById('btn-zh').className = l==='zh'?'active':'';
-  document.getElementById('btn-en').className = l==='en'?'active':'';
+  ['btn-zh','login-btn-zh'].forEach(id=>{const e=document.getElementById(id);if(e)e.className=l==='zh'?'active':'';});
+  ['btn-en','login-btn-en'].forEach(id=>{const e=document.getElementById(id);if(e)e.className=l==='en'?'active':'';});
   document.documentElement.lang = l;
-  applyLang();
+  applyLoginLang();
+  if(authed) applyLang();
+}
+
+function applyLoginLang() {
+  const ti = document.getElementById('token-input');
+  if(ti) ti.placeholder = t().tokenPlaceholder;
+  const ls = document.getElementById('login-submit');
+  if(ls) ls.textContent = t().loginBtn;
+  const le = document.getElementById('login-error');
+  if(le) le.textContent = t().loginError;
+  const lo = document.getElementById('logout-btn');
+  if(lo) lo.textContent = t().logout;
 }
 
 function applyLang() {
-  document.getElementById('h-settings').textContent = t().settings;
-  document.getElementById('h-recent').textContent = t().recent;
+  const hs = document.getElementById('h-settings');
+  if(hs) hs.textContent = t().settings;
+  const hr = document.getElementById('h-recent');
+  if(hr) hr.textContent = t().recent;
+  applyLoginLang();
   loadStats(); loadSettings(); loadData();
+}
+
+async function doLogin() {
+  const input = document.getElementById('token-input').value.trim();
+  if(!input) return;
+  TOKEN = input;
+  H = {'Authorization':'Bearer '+TOKEN};
+  try {
+    const r = await fetch('/stats', {headers: H});
+    if(r.ok) {
+      localStorage.setItem('ctx-hub-token', TOKEN);
+      authed = true;
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('main-app').style.display = 'block';
+      applyLang();
+    } else {
+      document.getElementById('login-error').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+function doLogout() {
+  TOKEN = '';
+  H = {};
+  authed = false;
+  localStorage.removeItem('ctx-hub-token');
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('token-input').value = '';
+  document.getElementById('login-error').style.display = 'none';
 }
 
 async function api(path, opts={}){
@@ -461,7 +547,26 @@ async function loadData(){
 }
 
 setLang(lang);
-setInterval(loadStats, 30000);
+
+(async function init() {
+  if(TOKEN) {
+    try {
+      const r = await fetch('/stats', {headers: H});
+      if(r.ok) {
+        authed = true;
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('main-app').style.display = 'block';
+        applyLang();
+        setInterval(loadStats, 30000);
+        return;
+      }
+    } catch(e) {}
+    localStorage.removeItem('ctx-hub-token');
+    TOKEN = '';
+    H = {};
+  }
+  applyLoginLang();
+})();
 </script>
 </body>
 </html>"""

@@ -66,6 +66,40 @@ docker compose up -d --build
 | `knowledge` | 知识 |
 | `custom` | 自定义 |
 
+## Windows 客户端（同步脚本）
+
+在 Windows 电脑上运行，自动将 MineContext 本地数据同步到云端 Hub。
+
+### 安装
+
+```bash
+cd client
+pip install -r requirements.txt
+cp config.example.json config.json
+# 编辑 config.json 填写 hub_url 和 hub_token
+```
+
+### 配置
+
+编辑 `client/config.json`：
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `hub_url` | Context Hub 地址 | - |
+| `hub_token` | API Token | - |
+| `db_path` | MineContext 数据库路径（留空自动检测） | 自动 |
+| `sync_interval_seconds` | 同步间隔（秒） | 60 |
+| `batch_size` | 每批推送条数 | 100 |
+| `sync_types` | 要同步的数据表 | 全部 |
+
+### 运行
+
+```bash
+python sync.py
+```
+
+脚本会持续运行，每 60 秒（可配置）检查一次新数据并推送。支持增量同步，不会重复推送。
+
 ## License
 
 MIT
