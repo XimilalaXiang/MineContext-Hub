@@ -343,6 +343,59 @@ MCP_TOOLS = [
 ]
 
 
+def _slim_row(row: dict, row_type: str) -> dict:
+    """Extract only essential fields from a database row, parsing metadata intelligently."""
+    meta = {}
+    if row.get("metadata"):
+        try:
+            raw = json.loads(row["metadata"])
+            if isinstance(raw, dict):
+                inner_meta = raw.get("metadata")
+                if isinstance(inner_meta, str):
+                    try:
+                        inner_meta = json.loads(inner_meta)
+                    except (json.JSONDecodeError, TypeError):
+                        inner_meta = None
+                if isinstance(inner_meta, dict):
+                    ei = inner_meta.get("extracted_insights", {})
+                    if ei.get("key_entities"):
+                        meta["key_entities"] = ei["key_entities"]
+                    if ei.get("focus_areas"):
+                        meta["focus_areas"] = ei["focus_areas"]
+                    if inner_meta.get("category_distribution"):
+                        meta["category"] = inner_meta["category_distribution"]
+                if raw.get("status") is not None:
+                    meta["status"] = raw["status"]
+                if raw.get("urgency") is not None:
+                    meta["urgency"] = raw["urgency"]
+                if raw.get("assignee"):
+                    meta["assignee"] = raw["assignee"]
+                if raw.get("reason"):
+                    meta["reason"] = raw["reason"]
+                if raw.get("start_time"):
+                    meta["start_time"] = raw["start_time"]
+                if raw.get("end_time"):
+                    meta["end_time"] = raw["end_time"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    result = {"id": row["id"], "type": row_type}
+    if row.get("title"):
+        result["title"] = row["title"]
+    content = row.get("content") or ""
+    if len(content) > 500:
+        result["content"] = content[:500] + "..."
+    else:
+        result["content"] = content
+    if row.get("client_ts"):
+        result["time"] = row["client_ts"]
+    elif row.get("created_at"):
+        result["time"] = row["created_at"]
+    if meta:
+        result["meta"] = meta
+    return result
+
+
 def _mcp_call_tool(name: str, arguments: dict) -> list:
     conn = _get_db()
     try:
@@ -357,22 +410,23 @@ def _mcp_call_tool(name: str, arguments: dict) -> list:
                 q += " AND (metadata LIKE '%\"status\": 1%' OR metadata LIKE '%\"status\":1%')"
             q += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
-            rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+            rows = [_slim_row(dict(r), "todo") for r in conn.execute(q, params).fetchall()]
             text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No todo items found."
             return [{"type": "text", "text": text}]
 
         elif name == "get_recent_activities":
             hours = arguments.get("hours", 24)
             limit = min(arguments.get("limit", 20), 100)
-            q = "SELECT * FROM contexts WHERE type = 'activity' ORDER BY id DESC LIMIT ?"
-            rows = [dict(r) for r in conn.execute(q, [limit]).fetchall()]
+            cutoff = f"datetime('now', '-{hours} hours')"
+            q = f"SELECT * FROM contexts WHERE type = 'activity' AND (client_ts >= {cutoff} OR client_ts IS NULL) ORDER BY id DESC LIMIT ?"
+            rows = [_slim_row(dict(r), "activity") for r in conn.execute(q, [limit]).fetchall()]
             text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No recent activities found."
             return [{"type": "text", "text": text}]
 
         elif name == "get_tips":
             limit = min(arguments.get("limit", 20), 100)
             q = "SELECT * FROM contexts WHERE type = 'tip' ORDER BY id DESC LIMIT ?"
-            rows = [dict(r) for r in conn.execute(q, [limit]).fetchall()]
+            rows = [_slim_row(dict(r), "tip") for r in conn.execute(q, [limit]).fetchall()]
             text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else "No tips found."
             return [{"type": "text", "text": text}]
 
@@ -392,7 +446,7 @@ def _mcp_call_tool(name: str, arguments: dict) -> list:
                 params.extend(allowed)
             q += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
-            rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+            rows = [_slim_row(dict(r), dict(r)["type"]) for r in conn.execute(q, params).fetchall()]
             text = json.dumps(rows, ensure_ascii=False, indent=2) if rows else f"No results for '{query}'."
             return [{"type": "text", "text": text}]
 
