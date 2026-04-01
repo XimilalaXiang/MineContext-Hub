@@ -404,7 +404,6 @@ def _mcp_call_tool(name: str, arguments: dict) -> list:
                 q += " AND (metadata LIKE '%\"status\": 1%' OR metadata LIKE '%\"status\":1%')"
             q += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
-            rows = [_slim_row(dict(r), "todo") for r in conn.execute(q, params).fetchall()]
             brief = arguments.get("brief", False)
             rows = [_slim_row(dict(r), "todo", brief=brief) for r in conn.execute(q, params).fetchall()]
             text = json.dumps(rows, ensure_ascii=False, separators=(",", ":")) if rows else "No todo items found."
@@ -952,6 +951,36 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') closePanel(); }
 
 setLang(lang);
 
+let autoRefreshTimer = null;
+let lastTopId = 0;
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  autoRefreshTimer = setInterval(async () => {
+    if(!authed) return;
+    try {
+      const type = document.getElementById('filter-type').value;
+      const d = await api('/api/contexts?limit=1' + (type ? '&type=' + type : ''));
+      const items = d.items || [];
+      if(items.length && items[0].id !== lastTopId) {
+        lastTopId = items[0].id;
+        loadData();
+        loadStats();
+      }
+    } catch(e) {}
+  }, 15000);
+}
+
+function stopAutoRefresh() {
+  if(autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+}
+
+const _origLoadData = loadData;
+loadData = async function() {
+  await _origLoadData();
+  if(cachedItems.length) lastTopId = cachedItems[0].id;
+};
+
 (async function init() {
   if(TOKEN) {
     try {
@@ -962,6 +991,7 @@ setLang(lang);
         document.getElementById('main-app').style.display = 'block';
         applyLang();
         setInterval(loadStats, 30000);
+        startAutoRefresh();
         return;
       }
     } catch(e) {}
