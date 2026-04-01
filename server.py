@@ -825,7 +825,7 @@ async function loadData(){
   if(!cachedItems.length){el.innerHTML=`<div class="empty">${t().noData}</div>`;document.getElementById('pagination').innerHTML='';return;}
   const esc = s => s ? s.replace(/</g,'&lt;').replace(/>/g,'&gt;') : '-';
   el.innerHTML=`<table><thead><tr><th>${t().thId}</th><th>${t().thType}</th><th>${t().thTitle}</th><th>${t().thContent}</th><th>${t().thSource}</th><th>${t().thTime}</th></tr></thead><tbody>${
-    cachedItems.map((r,i)=>`<tr class="clickable" onclick="openPanel(${i})"><td>${r.id}</td><td><span class="badge">${typeName(r.type)}</span></td><td>${esc(r.title)}</td><td>${esc((r.content||'').substring(0,80))}</td><td>${esc(r.source)}</td><td>${r.created_at||'-'}</td></tr>`).join('')
+    cachedItems.map((r,i)=>`<tr class="clickable" onclick="openPanel(${i})"><td>${r.id}</td><td><span class="badge">${typeName(r.type)}</span></td><td>${esc(r.title)}</td><td>${esc((r.content||'').substring(0,80))}</td><td>${esc(r.source)}</td><td>${r.client_ts||r.created_at||'-'}</td></tr>`).join('')
   }</tbody></table>`;
   const pages = Math.ceil(totalRecords/pageSize);
   document.getElementById('pagination').innerHTML=`
@@ -858,7 +858,7 @@ function openPanel(idx) {
     ${item.tags ? `<div class="detail-field"><div class="detail-label">${T.fieldTags}</div><div class="detail-value">${esc(item.tags)}</div></div>` : ''}
     ${item.confidence != null ? `<div class="detail-field"><div class="detail-label">${T.fieldConfidence}</div><div class="detail-value">${item.confidence}</div></div>` : ''}
     ${item.importance != null ? `<div class="detail-field"><div class="detail-label">${T.fieldImportance}</div><div class="detail-value">${item.importance}</div></div>` : ''}
-    <div class="detail-field"><div class="detail-label">${T.fieldTime}</div><div class="detail-value">${item.created_at || '-'}</div></div>
+    <div class="detail-field"><div class="detail-label">${T.fieldTime}</div><div class="detail-value">${item.client_ts || item.created_at || '-'}</div></div>
     ${metaHtml}
   `;
   document.getElementById('panel-actions').innerHTML = `
